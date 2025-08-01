@@ -21,6 +21,7 @@ export type PaginationResponse<T> = {
   hasPrevious: boolean;
   next: PaginationToken; // Updated to reflect a more specific type
   hasNext: boolean;
+  totalCount?: number;
 };
 
 /**

@@ -14,6 +14,7 @@ interface AggregateParams extends PaginationParams {
   options?: Record<string, any>;
   before?: string;
   collation?: Record<string, any> | null;
+  includeTotalCount?: boolean;
 }
 
 /**
@@ -51,6 +52,8 @@ interface AggregateParams extends PaginationParams {
  *    -previous {String} The value to start querying previous page.
  *    -after {String} The _id to start querying the page.
  *    -before {String} The _id to start querying previous page.
+ *    -includeTotalCount {boolean} Whether to include the total count of matching documents in the response.
+ *      Uses $facet for performance to run both pagination and count in a single aggregation.
  *    -options {Object} Aggregation options
  *    -collation {Object} An optional collation to provide to the mongo query. E.g. { locale: 'en', strength: 2 }. When null, disables the global collation.
  */
@@ -69,16 +72,43 @@ export default async function aggregate(
 
   let aggregationPipeline: Document[];
 
-  if (params.sortCaseInsensitive) {
+  if (params.includeTotalCount) {
+    // Use $facet to run both pagination and count in a single aggregation
+    let paginationStages: Document[];
+    
+    if (params.sortCaseInsensitive) {
+      paginationStages = [
+        { $addFields: { __lc: { $toLower: `$${params.paginatedField}` } } },
+        { $match },
+        { $sort },
+        { $limit },
+        { $project: { __lc: 0 } },
+      ];
+    } else {
+      paginationStages = [{ $match }, { $sort }, { $limit }];
+    }
+
     aggregationPipeline = params.aggregation.concat([
-      { $addFields: { __lc: { $toLower: `$${params.paginatedField}` } } },
-      { $match },
-      { $sort },
-      { $limit },
-      { $project: { __lc: 0 } },
+      {
+        $facet: {
+          results: paginationStages,
+          totalCount: [{ $match: generateCursorQuery({ ...params, next: undefined, previous: undefined }) }, { $count: 'count' }]
+        }
+      }
     ]);
   } else {
-    aggregationPipeline = params.aggregation.concat([{ $match }, { $sort }, { $limit }]);
+    // Original behavior without count
+    if (params.sortCaseInsensitive) {
+      aggregationPipeline = params.aggregation.concat([
+        { $addFields: { __lc: { $toLower: `$${params.paginatedField}` } } },
+        { $match },
+        { $sort },
+        { $limit },
+        { $project: { __lc: 0 } },
+      ]);
+    } else {
+      aggregationPipeline = params.aggregation.concat([{ $match }, { $sort }, { $limit }]);
+    }
   }
 
   // Aggregation options:
@@ -105,7 +135,17 @@ export default async function aggregate(
     options
   );
 
-  const results = await cursor.toArray();
+  const aggregationResults = await cursor.toArray();
 
-  return prepareResponse(results, params);
+  if (params.includeTotalCount) {
+    const facetResult = aggregationResults[0];
+    const results = facetResult.results;
+    const totalCount = facetResult.totalCount[0]?.count || 0;
+    
+    const response = prepareResponse(results, params);
+    response.totalCount = totalCount;
+    return response;
+  } else {
+    return prepareResponse(aggregationResults, params);
+  }
 }
