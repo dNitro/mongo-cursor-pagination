@@ -41,3 +41,6 @@ jspm_packages
 
 # Node 6 transpiled code.
 dist/
+
+# Claude Code documentation
+CLAUDE.md
